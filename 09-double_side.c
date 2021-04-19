@@ -2,23 +2,29 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <errno.h>
 #include <stdio.h>
 #include <sys/sem.h>
 
-int inc(int semid, struct sembuf* buf) {
-    //struct sembuf buf;
-    buf->sem_op = 1;
-    buf->sem_flg = 0;
-    buf->sem_num = 0;
-    return semop(semid, buf, 1);
-}
 
-int dec(int semid, struct sembuf* buf) {
-    //struct sembuf buf;
-    buf->sem_op = -1;
-    buf->sem_flg = 0;
-    buf->sem_num = 0;
-    return semop(semid, buf, 1);
+void try_semop(int sem_id, int sem_op) {
+    struct sembuf mybuf;
+    mybuf.sem_num = 0;
+    mybuf.sem_flg = 0;
+    mybuf.sem_op = sem_op;
+    if (semop(sem_id, &mybuf, 1) < 0) {
+        printf("Can\'t wait for condition\n");
+        exit(-1);
+    }
+}
+void A(int sem_id, int value) {
+    try_semop(sem_id, value);
+}
+void D(int sem_id, int value) {
+    try_semop(sem_id, -value);
+}
+void Z(int sem_id) {
+    try_semop(sem_id, 0);
 }
 
 int main()
@@ -28,81 +34,89 @@ int main()
     key_t key;
     char pathname[] = "09-double_side.c";
     struct sembuf buffer;
-
     int semid;
     char resstring[14];
 
     if (pipe(parent) < 0) {
-        printf("Can't create pipe\n\r");
+        printf("Невозможно создать pipe отца\n\r");
         exit(-1);
     }
     if ((key = ftok(pathname, 0)) < 0) {
-        printf("Key does not generated\n");
+        printf("Ключ не сгенерирован.\n");
         exit(-1);
     }
-
-    // semafor creation
-    if ((semid = semget(key, 1, 0666)) < 0) {
-        printf("Semaphore not found. Trying to create... \n");
-        if ((semid = semget(key, 1, 0666 | IPC_CREAT)) < 0) {
-            printf("Can't get semid\n");
+    if ((semid = semget(key, 1, 0666 | IPC_CREAT | IPC_EXCL)) < 0) {
+        if (errno != EEXIST) {
+            printf("Can\'t create semaphore set\n");
             exit(-1);
         }
-        printf("Create successful!\n");
+        else if ((semid = semget(key, 1, 0)) < 0) {
+            printf("Can\'t find semaphore\n");
+            exit(-1);
+        }
+    }
+    else {
+        A(semid, 2);
+    }
+
+    int N;
+    printf("Введите N: \n");
+    scanf("%d", &N);
+    if (N < 2) {
+        printf("N должен быть больше или равен 2.\n");
+        exit(-1);
     }
     result = fork();
-
     if (result < 0) {
-        printf("Can't fork child\n\r");
+        printf("Неудачный fork\n\r");
         exit(-1);
     }
+
+    // Parent
     else if (result > 0) {
-        int N;
-        printf("Pls input N: \n");
-        scanf("%d", &N);
-        if (N < 2) {
-            printf("N should be more or equals 2.\n");
-            exit(-1);
-        }
         for (size_t i = 0; i < N; i++)
         {
-            // write children
-            if (write(parent[1], "Hello, world!", 14) != 14) {
-                printf("Can\'t write all string\n\r");
-                exit(-1);
+            D(semid, 1);
+            if (i != 0) {
+                size = read(parent[0], resstring, 14);
+                if (size < 0) {
+                    printf("Can\'t read string from pipe\n");
+                    exit(-1);
+                }
+                printf("%d. Parent read message:%s\n", i, resstring);
             }
-            printf("Parent wrote his message!\n\r", i + 1);
-            inc(semid, &buffer);
-            dec(semid, &buffer)
-            size = read(parent[0], resstring, 14);
+            size = write(parent[1], "Hello, world!", 14);
+
             if (size != 14) {
-                printf("Can\'t read from child\n\r");
+                printf("Can\'t write all string to pipe\n");
                 exit(-1);
             }
-            printf("Parent read: %s\n\r", resstring);
+            D(semid, 1);
         }
         close(parent[0]);
     }
     else {
+        // Child
         int counter = 0;
-        while (1) {
-            dec(semid, &buffer);
+        for (int i = 0; i < N; ++i) {
+            Z(semid);
             size = read(parent[0], resstring, 14);
-
             if (size < 0) {
-                close(parent[1]);
-                close(parent[0]);
-                printf("Success!\n");
-                return 0;
-            }
-            printf("Child read: %s\n\r", ++counter, resstring);
-
-            if (write(parent[1], "Hi, my parent", 14) != 14) {
-                printf("Can't write all string.\n");
+                printf("Can\'t read string from pipe\n");
                 exit(-1);
             }
-            inc(semid, &buffer);
+            printf("%d. Child read message:%s\n", ++counter, resstring);
+            size = write(parent[1], "Hello, parent", 14);
+            if (size != 14) {
+                printf("Can\'t write all string to pipe: %d\n", size);
+                exit(-1);
+            }
+
+            A(semid, 2);
         }
+
+        close(parent[1]);
+        close(parent[0]);
     }
     return 0;
 }
