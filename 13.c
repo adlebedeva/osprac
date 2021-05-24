@@ -14,7 +14,7 @@ int createFile(char* name){
         printf("File open failed!\n");
        return 1;
     }
-    fputs("https://www.youtube.com/watch?v=Unj9WbeLzRU", fd);
+    fputs("test", fd);
 
     fclose(fd);
 
